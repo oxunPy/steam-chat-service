@@ -1,6 +1,8 @@
 package org.example.steamchatservice.config.socket;
 
 import org.example.steamchatservice.handler.ReactiveChatWebSocketHandler;
+import org.example.steamchatservice.handler.ReactiveChatWebSocketHandler2;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.HandlerMapping;
@@ -21,7 +23,7 @@ public class ReactiveWebSocketConfig {
     }
 
     @Bean
-    public HandlerMapping handlerMapping(ReactiveChatWebSocketHandler webSocketHandler) {
+    public HandlerMapping handlerMapping(@Qualifier("reactive_web_socket_handler2") ReactiveChatWebSocketHandler2 webSocketHandler) {
         Map<String, WebSocketHandler> map = new HashMap<>();
         map.put("/ws/chat", webSocketHandler); // Map the WebSocket handler to the "/ws" endpoint
 
