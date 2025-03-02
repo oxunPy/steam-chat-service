@@ -1,6 +1,7 @@
 package org.example.steamchatservice.handler;
 
 import org.example.steamchatservice.service.JwtService;
+import org.example.steamchatservice.service.redis.ReactiveRedisChatPublisher;
 import org.example.steamchatservice.service.redis.RedisSessionService;
 import org.example.steamchatservice.service.redis.RedisSessionService2;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -23,10 +24,12 @@ public class ReactiveChatWebSocketHandler2 implements WebSocketHandler {
 
     private final RedisSessionService2 redisSessionService;
     private final JwtService jwtService;
+    private final ReactiveRedisChatPublisher chatPublisher;
 
-    public ReactiveChatWebSocketHandler2(RedisSessionService2 redisSessionService, JwtService jwtService) {
+    public ReactiveChatWebSocketHandler2(RedisSessionService2 redisSessionService, JwtService jwtService, ReactiveRedisChatPublisher chatPublisher) {
         this.redisSessionService = redisSessionService;
         this.jwtService = jwtService;
+        this.chatPublisher = chatPublisher;
     }
 
     @Override
@@ -43,13 +46,32 @@ public class ReactiveChatWebSocketHandler2 implements WebSocketHandler {
                         return session.close(CloseStatus.NOT_ACCEPTABLE);
                     }
 
+//                    // Register sink for the user
+//                    redisSessionService.registerUserSink(username);
+//
+//                    // Save session in Redis (Shared storage across all instances)
+//                    return
+//                    redisSessionService.saveSession(username, session.getId())
+//                            .thenMany(session.receive()
+//                                    .map(WebSocketMessage::getPayloadAsText)
+//                                    .flatMap(message -> chatPublisher.sendMessage(username, friendUsername, message)))
+//                            .thenMany(redisSessionService.getUserSink(username)
+//                                    .asFlux()
+//                                    .map(session::textMessage)
+//                                    .as(session::send))
+//                            .doOnTerminate(() -> {
+//                                redisSessionService.removeSession(username)
+//                                        .then(Mono.fromRunnable(() -> redisSessionService.removeUserSink(username)))
+//                                        .subscribe();
+//                            }).then();
+
                     // Register sink for the user
                     redisSessionService.registerUserSink(username);
 
                     // Listen for incoming messages
-                    Flux<String> incomingMessages = session.receive()
+                    Flux<Void> incomingMessages = session.receive()
                             .map(WebSocketMessage::getPayloadAsText)
-                            .flatMap(message -> sendMessageToFriend(friendUsername, message));
+                            .flatMap(message -> chatPublisher.sendMessage(username, friendUsername, message));
 
                     // Listen for messages sent via the Sink
                     Flux<WebSocketMessage> outgoingMessages = redisSessionService.getUserSink(username)
@@ -60,6 +82,7 @@ public class ReactiveChatWebSocketHandler2 implements WebSocketHandler {
                             .and(incomingMessages);
                 });
     }
+
     private Mono<String> sendMessageToFriend(String friendUsername, String message) {
         return Mono.fromRunnable(() -> {
             Sinks.Many<String> friendSink = redisSessionService.getUserSink(friendUsername);
