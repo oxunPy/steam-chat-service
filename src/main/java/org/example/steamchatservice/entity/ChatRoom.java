@@ -1,24 +1,16 @@
 package org.example.steamchatservice.entity;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.relational.core.mapping.Table;
 
 import java.time.LocalDateTime;
 
-@Entity
 @Table(name = "chat_rooms")
 public class ChatRoom {
 
-    @jakarta.persistence.Id
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(unique = true, nullable = false)
     private String roomId;
 
     private String user1Id;
@@ -45,7 +37,7 @@ public class ChatRoom {
         this.id = id;
     }
 
-    public String    getRoomId() {
+    public String getRoomId() {
         return roomId;
     }
 

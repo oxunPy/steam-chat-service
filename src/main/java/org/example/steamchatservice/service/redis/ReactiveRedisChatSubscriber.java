@@ -13,9 +13,9 @@ import reactor.core.publisher.Sinks;
 public class ReactiveRedisChatSubscriber {
 
     private final StreamReceiver<String, MapRecord<String, String, String>> streamReceiver;
-    private final RedisSessionService2 redisSessionService;
+    private final RedisSessionService redisSessionService;
 
-    public ReactiveRedisChatSubscriber(@Qualifier("reactiveRedisConnectionFactory") ReactiveRedisConnectionFactory factory, RedisSessionService2 redisSessionService) {
+    public ReactiveRedisChatSubscriber(@Qualifier("reactiveRedisConnectionFactory") ReactiveRedisConnectionFactory factory, RedisSessionService redisSessionService) {
         this.streamReceiver = StreamReceiver.create(factory);
         this.redisSessionService = redisSessionService;
     }

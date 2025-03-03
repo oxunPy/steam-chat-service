@@ -1,129 +1,121 @@
 package org.example.steamchatservice.handler;
 
-import org.apache.commons.lang.StringUtils;
+import org.example.steamchatservice.service.ChatService;
 import org.example.steamchatservice.service.JwtService;
+import org.example.steamchatservice.service.redis.ReactiveRedisChatPublisher;
 import org.example.steamchatservice.service.redis.RedisSessionService;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DefaultDataBuffer;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketHandler;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
-import org.springframework.web.socket.TextMessage;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 
 import java.net.URI;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 @Component("reactive_web_socket_handler")
 public class ReactiveChatWebSocketHandler implements WebSocketHandler {
-    private final RedisSessionService redisSessionService;
-    private final RedisTemplate<Object, Object> redisTemplate;
-    private final JwtService jwtService;
-    private final ConcurrentHashMap<String, Mono<Void>> sendOperations = new ConcurrentHashMap<>();
 
-    public ReactiveChatWebSocketHandler(RedisSessionService redisSessionService, RedisTemplate<Object, Object> redisTemplate, JwtService jwtService) {
+    private final RedisSessionService redisSessionService;
+    private final JwtService jwtService;
+    private final ReactiveRedisChatPublisher chatPublisher;
+    private static final int MAX_CONNECTIONS = 5000;
+    private final ChatService chatService;
+
+    public ReactiveChatWebSocketHandler(RedisSessionService redisSessionService, JwtService jwtService, ReactiveRedisChatPublisher chatPublisher, ChatService chatService) {
         this.redisSessionService = redisSessionService;
-        this.redisTemplate = redisTemplate;
         this.jwtService = jwtService;
+        this.chatPublisher = chatPublisher;
+        this.chatService = chatService;
     }
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
-        URI uri = session.getHandshakeInfo().getUri();
-        if(uri != null) {
-            Map<String, String> queryParams = parseQueryParams(uri);
-            String token = queryParams.get("token");
-            String friendUsername = queryParams.get("friendUsername");
-
-            System.out.println("Extracted token: " + token);
-            System.out.println("Extracted friendUsername: " + friendUsername);
-
-            return jwtService.validateToken(token)
-                    .flatMap(username -> {
-                        if(username == null || username.isEmpty()) {
-                            return session.close(CloseStatus.NOT_ACCEPTABLE);
-                        }
-
-                        return redisSessionService
-                                .saveSession(username, session)
-                                .thenMany(session.receive()
-                                        .map(WebSocketMessage::getPayloadAsText)
-                                        .flatMap(message -> {
-                                            if(message == null || message.isEmpty()) {
-                                                return Mono.empty();
-                                            }
-                                            System.out.println("Received message: " + message);
-                                            return sendMessageToFriend(friendUsername, message);
-                                        }))
-                                .doFinally(signalType -> {
-                                    // Remove session when Websocket is closed
-                                    System.out.println("WebSocket closed: " + session.getId() + ", Reason: " + signalType.name());
-                                    redisSessionService.removeSession(username);
-                                })
-                                .doOnError(error -> {
-                                    System.err.println("❌ WebSocket error for user: " + username + ", reason: " + error.getMessage());
-                                    error.printStackTrace();
-                                })
-                                .then();
-                    });
-
+        if(redisSessionService.getActiveConnections() >= MAX_CONNECTIONS && session != null) {
+            return session.close();
         }
 
-        return Mono.empty();
-    }
+        URI uri = session.getHandshakeInfo().getUri();
+        Map<String, String> queryParams = parseQueryParams(uri);
 
-    private Mono<Void> sendMessageToFriend(String fUsername, String message) {
-        return redisSessionService.findSessionId(fUsername)
-                .flatMap(fSessionId -> {
-                    if (fSessionId != null) {
-                        WebSocketSession fSession = redisSessionService.getLocalSession(fUsername);
-                        if (fSession != null) {
-                            System.out.println("🔹 Sending message to friend " + fUsername + ": " + message);
-                            return sendToWebSocket(fSession, message);
-                        } else {
-                            System.err.println("❌ Friend session not found in local cache: " + fUsername);
-                        }
+        String token = queryParams.get("token");
+        String friendUsername = queryParams.get("friendUsername");
+
+        return jwtService.validateToken(token)
+                .flatMap(username -> {
+                    if (username == null || username.isEmpty()) {
+                        return session.close(CloseStatus.NOT_ACCEPTABLE);
                     }
-                    else {
-                        System.err.println("❌ No session found for friend: " + fUsername);
-                    }
-                    return Mono.empty();
+
+                    // Register sink for the user
+                    redisSessionService.registerUserSink(username);
+                    // send late user's messages
+                    // sendLatestMessages(username, chatService.handleUserOnline(username));
+                    Flux<WebSocketMessage>pendingMessages = chatService.handleUserOnline(username)
+                            .map(msg -> session.textMessage(msg));
+
+                    // Listen for incoming messages
+                    Flux<Void> incomingMessages = session.receive()
+                            .map(WebSocketMessage::getPayloadAsText)
+                            .flatMap(message -> {
+                                if(message != null && !message.trim().isEmpty()) {
+                                    chatService.saveChatMessage(username, friendUsername, message);
+                                }
+                                return chatPublisher.sendMessage(username, friendUsername, message);
+                            });
+
+                    // Listen for messages sent via the Sink
+                    Flux<WebSocketMessage> outgoingMessages = redisSessionService.getUserSink(username)
+                            .asFlux()
+                            .map(session::textMessage);
+
+                    Flux<WebSocketMessage> allMessages = Flux.concat(pendingMessages, outgoingMessages);
+
+                    return session.send(allMessages)
+                            .and(incomingMessages)
+                            .doFinally(signalType -> {
+                                redisSessionService.removeSession(username).then();
+                                redisSessionService.removeUserSink(username);
+                            });
                 });
     }
 
-    private Mono<Void> sendToWebSocket(WebSocketSession session, String message) {
-        if (session == null || !session.isOpen()) {
-            System.err.println("❌ Session is closed or invalid: " + (session != null ? session.getId() : "null"));
-            return Mono.empty();
-        }
-
-        // Serialize send operations for this session
-        return sendOperations.compute(session.getId(), (key, existingMono) -> {
-           Mono<Void> newMono = session.send(Mono.just(session.textMessage(message)))
-                   .doOnSuccess(unused -> System.out.println("✅ Message sent successfully to " + session.getId()))
-                   .doOnError(err -> {
-                       System.err.println("❌ Error sending message: " + err.getMessage());
-                       // Remove the session if an error occurs
-                       redisSessionService.removeSession(session.getId()).subscribe();
-                   })
-                   .then();
-           if(existingMono != null) {
-               return existingMono.then(newMono);
-           }
-
-           return newMono;
+    private Mono<String> sendMessageToFriend(String friendUsername, String message) {
+        return Mono.fromRunnable(() -> {
+            Sinks.Many<String> friendSink = redisSessionService.getUserSink(friendUsername);
+            if (friendSink != null) {
+                System.out.println("✅ Sending to " + friendUsername + ": " + message);
+                friendSink.tryEmitNext(message);
+            } else {
+                System.err.println("❌ Friend session not found: " + friendUsername);
+            }
         });
     }
 
+    private Mono<Void> sendLatestMessages(String username, Flux<String> messages) {
+        return Mono.defer(() -> {
+            Sinks.Many<String> userSink = redisSessionService.getUserSink(username);
+            if (userSink != null) {
+                System.out.println("✅ Sending to " + username);
+                return messages.doOnNext(msg -> userSink.tryEmitNext(msg)).then();
+            } else {
+                System.err.println("❌ User session not found: " + username);
+                return Mono.empty();
+            }
+        });
+    }
 
     private Map<String, String> parseQueryParams(URI uri) {
+        if(uri.getQuery() == null) return new HashMap<>();
         return Arrays.stream(uri.getQuery().split("&"))
                 .map(param -> param.split("="))
                 .collect(Collectors.toMap(kv -> kv[0], kv -> kv[1]));

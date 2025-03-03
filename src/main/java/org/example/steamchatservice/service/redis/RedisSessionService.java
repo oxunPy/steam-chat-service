@@ -1,79 +1,69 @@
 package org.example.steamchatservice.service.redis;
 
-import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.socket.WebSocketSession;
+import org.example.steamchatservice.entity.ChatMessage;
+import org.example.steamchatservice.repository.ChatMessageR2Repository;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
-import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
 
-@Service
+@Component
 public class RedisSessionService {
-    private final ReactiveStringRedisTemplate redisTemplate;
-    private final ConcurrentHashMap<String, WebSocketSession> localSessions = new ConcurrentHashMap<>();
-    public static final String SESSION_KEY_PREFIX = "chat:session:";
+    private final ReactiveRedisTemplate<String, String> redisTemplate;
+    private final Map<String, Sinks.Many<String>> userMessageSinks = new ConcurrentHashMap<>();
+    private final ChatMessageR2Repository chatMessageR2Repository;
 
-    public RedisSessionService(ReactiveStringRedisTemplate redisTemplate) {
+    public RedisSessionService(@Qualifier("reactiveRedisTemplateStr") ReactiveRedisTemplate<String, String> redisTemplate, ChatMessageR2Repository chatMessageR2Repository) {
         this.redisTemplate = redisTemplate;
-         subscribeToExpirationEvents();
+        this.chatMessageR2Repository = chatMessageR2Repository;
     }
 
-    private void subscribeToExpirationEvents() {
-        redisTemplate.listenToChannel("__keyevent@0__:expired")
-                .doOnNext(message -> {
-                    String expiredKey = message.getMessage();
-                    if (expiredKey.startsWith(SESSION_KEY_PREFIX)) {
-                        String username = expiredKey.substring(SESSION_KEY_PREFIX.length());
-                        System.out.println("Session expired for username: " + username);
-                        localSessions.remove(username); // Remove from local cache
-                    }
-                })
-                .subscribe();
-    }
-
-    @Scheduled(fixedRate = 3600000) // Run every hour
-    public void cleanupLocalSessions() {
-        System.out.println("Cleaning up local sessions...");
-        localSessions.entrySet().removeIf(entry -> {
-            WebSocketSession session = entry.getValue();
-            if (session == null || !session.isOpen()) {
-                System.out.println("Removing stale session for username: " + entry.getKey());
-                return true;
-            }
-            return false;
-        });
-    }
-
-    public Mono<Void> saveSession(String username, WebSocketSession session) {
-        System.out.println("Saving session for username: " + username);
-        localSessions.put(username, session);
+    // Save user sessionId in Redis (user -> sessionId)
+    public Mono<Void> saveSession(String username, String sessionId) {
         return redisTemplate.opsForValue()
-                .set(SESSION_KEY_PREFIX + username, session.getId(), Duration.ofHours(1))
-                .doOnSuccess(unused -> System.out.println("Session saved to Redis: " + username))
-                .doOnError(err -> System.err.println("Error saving session to Redis: " + err.getMessage()))
+                .set("session:" + username, sessionId)
                 .then();
     }
 
+    // Find sessionId by username
     public Mono<String> findSessionId(String username) {
-        System.out.println("Fetching session ID for username: " + username);
-        return redisTemplate.opsForValue()
-                .get(SESSION_KEY_PREFIX + username)
-                .doOnNext(sessionId -> System.out.println("Fetched session ID: " + sessionId))
-                .doOnError(err -> System.err.println("Error fetching session ID: " + err.getMessage()));
+        return redisTemplate.opsForValue().get("session:" + username);
     }
 
-    public WebSocketSession getLocalSession(String username) {
-        return localSessions.get(username);
+    // Register a sink for the user to send/receive messages
+    public void registerUserSink(String username) {
+        userMessageSinks.computeIfAbsent(username, key -> Sinks.many().multicast().directBestEffort());
     }
 
+    // Get user's sink for message sending
+    public Sinks.Many<String> getUserSink(String username) {
+        return userMessageSinks.get(username);
+    }
+
+    // Send message to a user via their sink
+    public void sendMessageToUser(String username, String message) {
+        Sinks.Many<String> sink = userMessageSinks.get(username);
+        if (sink != null) {
+            sink.tryEmitNext(message);
+        }
+    }
+
+    // Remove session from Redis when user disconnects
     public Mono<Void> removeSession(String username) {
-        System.out.println("Removing session for username: " + username);
-        localSessions.remove(username);
-        return redisTemplate.delete(SESSION_KEY_PREFIX + username)
-                .doOnSuccess(unused -> System.out.println("Session removed from Redis: " + username))
-                .doOnError(err -> System.err.println("Error removing session from Redis: " + err.getMessage()))
-                .then();
+        return redisTemplate.opsForValue().delete("session:" + username).then();
+    }
+
+    // Remove user sink when user disconnects
+    public void removeUserSink(String username) {
+        userMessageSinks.remove(username);
+    }
+
+    public int getActiveConnections() {
+        return userMessageSinks.size();
     }
 }
