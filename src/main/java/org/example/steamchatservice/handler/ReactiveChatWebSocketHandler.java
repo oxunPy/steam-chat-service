@@ -1,12 +1,15 @@
 package org.example.steamchatservice.handler;
 
+import org.example.steamchatservice.dto.MessageItem;
 import org.example.steamchatservice.service.ChatService;
 import org.example.steamchatservice.service.JwtService;
+import org.example.steamchatservice.service.kafka.ChatKafkaProducer;
 import org.example.steamchatservice.service.redis.ReactiveRedisChatPublisher;
 import org.example.steamchatservice.service.redis.RedisSessionService;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DefaultDataBuffer;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketHandler;
@@ -27,15 +30,20 @@ public class ReactiveChatWebSocketHandler implements WebSocketHandler {
 
     private final RedisSessionService redisSessionService;
     private final JwtService jwtService;
-    private final ReactiveRedisChatPublisher chatPublisher;
     private static final int MAX_CONNECTIONS = 5000;
     private final ChatService chatService;
+    private final ChatKafkaProducer chatKafkaProducer;
+    private final ReactiveRedisChatPublisher reactiveRedisChatPublisher;
 
-    public ReactiveChatWebSocketHandler(RedisSessionService redisSessionService, JwtService jwtService, ReactiveRedisChatPublisher chatPublisher, ChatService chatService) {
+    public ReactiveChatWebSocketHandler(RedisSessionService redisSessionService,
+                                        JwtService jwtService,
+                                        ChatService chatService,
+                                        ChatKafkaProducer chatKafkaProducer, ReactiveRedisChatPublisher reactiveRedisChatPublisher) {
         this.redisSessionService = redisSessionService;
         this.jwtService = jwtService;
-        this.chatPublisher = chatPublisher;
         this.chatService = chatService;
+        this.chatKafkaProducer = chatKafkaProducer;
+        this.reactiveRedisChatPublisher = reactiveRedisChatPublisher;
     }
 
     @Override
@@ -59,7 +67,6 @@ public class ReactiveChatWebSocketHandler implements WebSocketHandler {
                     // Register sink for the user
                     redisSessionService.registerUserSink(username);
                     // send late user's messages
-                    // sendLatestMessages(username, chatService.handleUserOnline(username));
                     Flux<WebSocketMessage>pendingMessages = chatService.handleUserOnline(username)
                             .map(msg -> session.textMessage(msg));
 
@@ -70,7 +77,9 @@ public class ReactiveChatWebSocketHandler implements WebSocketHandler {
                                 if(message != null && !message.trim().isEmpty()) {
                                     chatService.saveChatMessage(username, friendUsername, message);
                                 }
-                                return chatPublisher.sendMessage(username, friendUsername, message);
+                                 MessageItem msgItem = new MessageItem(username, friendUsername, message);
+                                 return chatKafkaProducer.sendMessage(msgItem);
+//                                return reactiveRedisChatPublisher.sendMessage(username, friendUsername, message);
                             });
 
                     // Listen for messages sent via the Sink

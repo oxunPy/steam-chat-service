@@ -24,6 +24,8 @@ public class ReactiveRedisChatPublisher {
                         "receiver", receiver,
                         "message", message
                 )))
+                .doOnSuccess(recordId -> System.out.println("✅ Message published to Redis Stream: " + recordId))
+                .doOnError(error -> System.err.println("❌ Redis Stream publish error: " + error.getMessage()))
                 .then();
     }
 }
