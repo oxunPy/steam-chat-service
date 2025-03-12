@@ -67,7 +67,7 @@ public class ReactiveChatWebSocketHandler implements WebSocketHandler {
                     // Register sink for the user
                     redisSessionService.registerUserSink(username);
                     // send late user's messages
-                    Flux<WebSocketMessage>pendingMessages = chatService.handleUserOnline(username)
+                    Flux<WebSocketMessage> pendingMessages = chatService.handleUserOnline(username)
                             .map(msg -> session.textMessage(msg));
 
                     // Listen for incoming messages
@@ -79,7 +79,6 @@ public class ReactiveChatWebSocketHandler implements WebSocketHandler {
                                 }
                                  MessageItem msgItem = new MessageItem(username, friendUsername, message);
                                  return chatKafkaProducer.sendMessage(msgItem);
-//                                return reactiveRedisChatPublisher.sendMessage(username, friendUsername, message);
                             });
 
                     // Listen for messages sent via the Sink

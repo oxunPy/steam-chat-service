@@ -17,15 +17,6 @@ public class ChatKafkaProducer {
         this.kafkaTemplate = kafkaTemplate;
     }
 
-//    public Mono<Void> sendMessage(MessageItem message) {
-//        return Mono.fromRunnable(() -> {
-//            if(message.getContent() != null && !message.getContent().trim().isEmpty()) {
-//                kafkaTemplate.send(chatMessagesTopic, message.getSender(), message);
-//            }
-//        });
-//    }
-
-
     public Mono<Void> sendMessage(MessageItem message) {
         return Mono.fromFuture(() -> kafkaTemplate.send("chat-messages", message.getSender(), message))
                 .doOnSuccess(result -> System.out.println("✅ Sent to Kafka: " + message))
