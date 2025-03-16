@@ -15,7 +15,8 @@ public class ReactiveRedisChatSubscriber {
     private final StreamReceiver<String, MapRecord<String, String, String>> streamReceiver;
     private final RedisSessionService redisSessionService;
 
-    public ReactiveRedisChatSubscriber(@Qualifier("reactiveRedisConnectionFactory") ReactiveRedisConnectionFactory factory, RedisSessionService redisSessionService) {
+    public ReactiveRedisChatSubscriber(@Qualifier("reactiveRedisConnectionFactory") ReactiveRedisConnectionFactory factory,
+                                       RedisSessionService redisSessionService) {
         this.streamReceiver = StreamReceiver.create(factory);
         this.redisSessionService = redisSessionService;
     }
